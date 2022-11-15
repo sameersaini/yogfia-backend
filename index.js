@@ -1,8 +1,9 @@
 const express = require('express')
 const mongoose = require('mongoose');
 const Razorpay = require('razorpay');
-const UserModel = require('./models/User');
+const { UserModel } = require('./models/User');
 const OrderModel = require('./models/Order');
+const ArtifactModel = require('./models/Artifact');
 const passport = require('passport');
 const bcrypt = require('bcrypt');
 const LocalStrategy = require('passport-local');
@@ -107,6 +108,7 @@ app.post('/user/signin', function(req, res,next) {
         );
         res.cookie('token', token)
         res.send({
+            userId: user.userId,
             login: true,
             name: user.name,
             email: user.username,
@@ -141,6 +143,7 @@ app.get('/user/info', function(req, res,next) {
             );
             res.cookie('token', newToken)
             res.send({
+                userId: user.userId,
                 login: true,
                 name: user.name,
                 email: user.username,
@@ -358,3 +361,228 @@ app.post('/payment/subscription/cancel/:subscriptionId', async function(req, res
         res.status(400).send({ message: 'Subscription cannot be cancelled', raw_message: e.message })
     }
 })
+
+
+// artifact comment & like
+
+app.get('/artifact/:artifactType/:artifactId', async (req, res) => {
+    const { artifactType, artifactId } = req.params;
+    try {
+        if(!req.cookies.token) {
+            return res.status(401).send({ message: 'access token is missing in the request' })
+        }
+        const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+        const user = await UserModel.findOne({username: token.username });
+        if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+        const artifact = await ArtifactModel.findOne({ artifactType, artifactId })
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(artifact);
+    } catch (e) {
+        res.status(400).send({ message: 'artifact cannot be fetched', raw_message: e.message })
+    }
+});
+
+app.put('/comment/:artifactType/:artifactId', async (req, res) => {
+    const { text } = req.body;
+    const { artifactType, artifactId } = req.params;
+    try {
+        if(!req.cookies.token) {
+            return res.status(401).send({ message: 'access token is missing in the request' })
+        }
+        const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+        const user = await UserModel.findOne({username: token.username });
+        if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+        const updatedPost = await ArtifactModel
+            .findOneAndUpdate({ artifactType, artifactId  },
+                { $push: {comments: { text, user: user._id }}, artifactType, artifactId },
+                {safe: true, upsert: true, new: true})
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedPost);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.put('/comment/edit/:commentId/:artifactType/:artifactId', async (req, res) => {
+    if(!req.cookies.token) {
+        return res.status(401).send({ message: 'access token is missing in the request' })
+    }
+    const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+    const user = await UserModel.findOne({username: token.username });
+    if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+    const { artifactType, artifactId, commentId } = req.params;
+    const { text } = req.body;
+    try {
+        const artifact = await ArtifactModel
+            .findOne({ artifactType, artifactId });
+
+        artifact.comments = artifact.comments.map(comment => {
+            if(comment._id.equals(commentId)) {
+                comment.text = text;
+            }
+            return comment;
+        })
+        await artifact.save();
+
+        const updatedArtifact = await ArtifactModel
+            .findOne({ artifactType, artifactId })
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedArtifact);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.delete('/comment/:commentId/:artifactType/:artifactId', async (req, res) => {
+    if(!req.cookies.token) {
+        return res.status(401).send({ message: 'access token is missing in the request' })
+    }
+    const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+    const user = await UserModel.findOne({username: token.username });
+    if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+    const { artifactType, artifactId, commentId } = req.params;
+    try {
+        const artifact = await ArtifactModel
+            .findOne({ artifactType, artifactId });
+
+        artifact.comments = artifact.comments.filter(comment => !comment._id.equals(commentId))
+        await artifact.save();
+
+        const updatedArtifact = await ArtifactModel
+            .findOne({ artifactType, artifactId })
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedArtifact);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.put('/like/:artifactType/:artifactId', async (req, res) => {
+    const { artifactType, artifactId } = req.params;
+    try {
+        if(!req.cookies.token) {
+            return res.status(401).send({ message: 'access token is missing in the request' })
+        }
+        const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+        const user = await UserModel.findOne({username: token.username });
+        if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+        const updatedPost = await ArtifactModel
+            .findOneAndUpdate({ artifactType, artifactId },
+                { $push: { likes: { user: user._id }}},
+                {safe: true, upsert: true, new: true})
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+
+        res.json(updatedPost);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.put('/unlike/:artifactType/:artifactId', async (req, res) => {
+    const { artifactType, artifactId } = req.params;
+    try {
+        if(!req.cookies.token) {
+            return res.status(401).send({ message: 'access token is missing in the request' })
+        }
+        const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+        const user = await UserModel.findOne({username: token.username });
+        if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+        const updatedPost = await ArtifactModel
+            .findOneAndUpdate({ artifactType, artifactId },
+                { $pull: { likes: { user: user._id }}},
+                {safe: true, upsert: true, new: true})
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedPost);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.put('/comment/like/:commentId/:artifactType/:artifactId', async (req, res) => {
+    if(!req.cookies.token) {
+        return res.status(401).send({ message: 'access token is missing in the request' })
+    }
+    const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+    const user = await UserModel.findOne({username: token.username });
+    if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+    const { artifactType, artifactId, commentId } = req.params;
+    try {
+        const artifact = await ArtifactModel
+            .findOne({ artifactType, artifactId });
+
+        artifact.comments = artifact.comments.map(comment => {
+            if(comment._id.equals(commentId)) {
+                comment.likes.push({ user: user._id })
+            }
+            return comment;
+        })
+        await artifact.save();
+        const updatedArtifact = await ArtifactModel
+            .findOne({ artifactType, artifactId })
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedArtifact);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
+app.put('/comment/unlike/:commentId/:artifactType/:artifactId', async (req, res) => {
+    if(!req.cookies.token) {
+        return res.status(401).send({ message: 'access token is missing in the request' })
+    }
+    const token = jwt.verify(req.cookies.token, 'yogfiatripfia');
+    const user = await UserModel.findOne({username: token.username });
+    if (!user) { return res.status(401).send({ message: 'user does not exist' }) }
+
+    const { artifactType, artifactId, commentId } = req.params;
+    try {
+        const artifact = await ArtifactModel
+            .findOne({ artifactType, artifactId });
+
+        artifact.comments = artifact.comments.map(comment => {
+            if(comment._id.equals(commentId)) {
+                comment.likes = comment.likes.filter(like => !user._id.equals(like.user));
+            }
+            return comment;
+        })
+
+        await artifact.save();
+        const updatedArtifact = await ArtifactModel
+            .findOne({ artifactType, artifactId })
+            .populate('comments.user', 'userId name')
+            .populate('comments.likes.user', 'userId name')
+            .populate('likes.user', 'userId name');
+        res.json(updatedArtifact);
+    } catch (e) {
+        console.log('returning error', e)
+        res.json(e)
+    }
+})
+
